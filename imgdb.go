@@ -8,17 +8,20 @@ package imgdb
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
-	"math"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
-	"github.com/google/uuid"
 	"github.com/jinzhu/gorm"
+	_ "github.com/jinzhu/gorm/dialects/mysql"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"github.com/mingkaic/imgdb/imgutil"
 )
@@ -31,17 +34,19 @@ import (
 // Is a wrapper gorm for images
 type ImgDB struct {
 	*gorm.DB
-	minW uint
-	minH uint
+	MinW     uint
+	MinH     uint
+	basePath string
+	mutex    sync.Mutex
 }
 
 //// Models
 
-// Directory ...
-// Specifies the directory path
-type Directory struct {
+// Cluster ...
+// Specifies a grouping of images
+type Cluster struct {
 	gorm.Model
-	Dirpath    string `gorm:"not null;unique"`
+	Name       string `gorm:"not null;unique"`
 	ImageFiles []ImageFile
 }
 
@@ -49,10 +54,10 @@ type Directory struct {
 // Specifies name information and image features
 type ImageFile struct {
 	gorm.Model
-	Name        string `gorm:"not null"`
-	Format      string `gorm:"not null"`
-	Index       string `gorm:"not null"`
-	DirectoryID int
+	Name      string `gorm:"not null"`
+	Format    string `gorm:"not null"`
+	Index     string `gorm:"not null"`
+	ClusterID int
 }
 
 // =============================================
@@ -60,10 +65,11 @@ type ImageFile struct {
 // =============================================
 
 const (
-	minLimit  = 500
-	epsilon   = 1e-10
 	chiThresh = 1e-5
+	minLimit  = 500
 )
+
+var rando = rand.Reader
 
 // =============================================
 //                    Public
@@ -71,15 +77,19 @@ const (
 
 // New ...
 // Initializes and migrates relevant schemas
-func New(dialect, source string) *ImgDB {
-	var out *ImgDB = &ImgDB{minW: minLimit, minH: minLimit}
-	var err error
-	out.DB, err = gorm.Open(dialect, source)
+func New(dialect, source, filedir string) *ImgDB {
+	db, err := gorm.Open(dialect, source)
 	if err != nil {
 		panic(err)
 	}
-
-	out.DB.AutoMigrate(&Directory{}, &ImageFile{})
+	db.AutoMigrate(&Cluster{}, &ImageFile{})
+	out := &ImgDB{
+		DB:       db,
+		MinW:     minLimit,
+		MinH:     minLimit,
+		basePath: filedir,
+	}
+	checkErr(os.MkdirAll(filedir, 0755))
 	return out
 }
 
@@ -88,7 +98,7 @@ func New(dialect, source string) *ImgDB {
 // Save to file system then add in database
 // Filters out images too small beyond a limit
 // Index and logic inspired from https://tinyurl.com/yaup47bg
-func (this *ImgDB) AddImg(dir, name string, source bytes.Buffer) error {
+func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err error) {
 	data := source.Bytes()
 	img, format, err := image.Decode(&source)
 
@@ -97,146 +107,150 @@ func (this *ImgDB) AddImg(dir, name string, source bytes.Buffer) error {
 		bounds := img.Bounds()
 		width := bounds.Dx()
 		height := bounds.Dy()
-		if uint(width) < this.minW || uint(height) < this.minH {
-			return fmt.Errorf("image too small: got <%d, %d> size", width, height)
+		if uint(width) < this.MinW || uint(height) < this.MinH {
+			err = fmt.Errorf("image too small: got <%d, %d> size", width, height)
+			return
 		}
 	}
 
 	// feature extraction
-	features := generateFeature(img, format)
+	features := imgutil.GenerateFeature(img, format)
 	if features == nil {
-		return fmt.Errorf("failed to extract features for %s", name)
-	}
-
-	// serialize features
-	featstr, err := stringify(features)
-	if err != nil {
-		return err
+		err = fmt.Errorf("failed to extract features for %s", name)
+		return
 	}
 
 	filename := name + "." + format
-	imgModel := ImageFile{Name: name, Format: format, Index: featstr}
+	imgModel := ImageFile{Name: name, Format: format, Index: stringify(features)}
 
 	// ==== begin critical section ====
-	// todo: make threadsafe
-	directory := getDirectory(this, dir)
-	if directory == nil {
-		err = os.MkdirAll(dir, 0755)
-		if err != nil {
-			return err
-		}
-		// create directory on db
-		this.Create(&Directory{Dirpath: dir, ImageFiles: []ImageFile{imgModel}})
-	} else {
-		// similarity check
-		// 1. check for duplicate features to avoid pollution
-		imgFiles := getAssocs(this, directory) // todo: change to get clusters...
-		// todo: optimize this search via clustering (to minimize search space)
-		for _, file := range imgFiles {
-			feat, err := featureParse(file.Index)
-			if err != nil {
-				return err
-			}
-			// test similarity between new file and file
-			sim := chiDist(features, feat)
-			if sim < chiThresh { // too similar beyond a threshold is marked as same
-				fmt.Println("found similar files %s %s", file.Name, name+"."+format)
-			}
-		}
-		// 2. check for same files and insert uuid to avoid dups
-		if _, err := os.Stat(filepath.Join(dir, filename)); err == nil {
-			imgModel.Name += uuid.New().String()
-			filename = imgModel.Name + "." + format
-		}
-		// associate image model
-		this.Model(directory).Association("ImageFiles").Append(imgModel)
+	this.mutex.Lock()
+	cluster := getCluster(this, features)
+	if cluster == nil {
+		err = fmt.Errorf("get cluster failed for features %v", features)
 	}
-	// create image on db
-	this.Create(imgModel)
-
-	// write to file (invariant: filename is unique)
-	file, err := os.Create(filepath.Join(dir, filename))
-	if err != nil {
-		return err
+	// similarity check
+	// 1. check for duplicate features to avoid pollution
+	imgFiles := getAssocs(this, cluster)
+	for _, file := range imgFiles {
+		// test similarity between new file and file
+		sim := imgutil.ChiDist(features, featureParse(file.Index))
+		if sim < chiThresh { // too similar beyond a threshold is marked as same
+			fmt.Println("found similar files %s %s", file.Name, name+"."+format)
+		}
 	}
-	_, err = file.Write(data)
-	if err != nil {
-		return err
+	// 2. check for same files and insert uuid to avoid dups
+	if fileExists(this, filename) {
+		var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
+		io.ReadFull(rando, r[:])
+		var appendage [16]byte
+		hex.Encode(appendage[:], r[:])
+		imgModel.Name += string(appendage[:])
+		filename = imgModel.Name + "." + format
 	}
-	file.Close()
+	// associate image model
+	this.Model(cluster).Association("ImageFiles").Append(imgModel)
+	this.mutex.Unlock()
 	// ==== end critical section ====
 
-	return nil
+	// write to file (invariant: filename is unique)
+	fileLoc = filepath.Join(this.basePath, filename)
+	file, err := os.Create(fileLoc)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	if _, err = file.Write(data); err != nil {
+		return
+	}
+
+	return
 }
 
 // =============================================
 //                    Private
 // =============================================
 
+func checkErr(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 //// Data Serialization Utility
 
-func stringify(arr []float32) (out string, err error) {
+// exact record of input float array
+func stringify(arr []float32) string {
 	buf := new(bytes.Buffer)
-	err = binary.Write(buf, binary.LittleEndian, arr)
-	out = string(buf.Bytes())
-	return
+	checkErr(binary.Write(buf, binary.LittleEndian, arr))
+	return string(buf.Bytes())
 }
 
-func featureParse(str string) (out []float32, err error) {
-	out = make([]float32, len([]byte(str))/4)
+func featureParse(str string) []float32 {
+	out := make([]float32, len([]byte(str))/4)
 	buf := bytes.NewBuffer([]byte(str))
-	err = binary.Read(buf, binary.LittleEndian, out)
-	return
+	checkErr(binary.Read(buf, binary.LittleEndian, out))
+	return out
 }
 
-//// Feature Extraction and Similarity Metric
-
-func generateFeature(img image.Image, format string) []float32 {
-	if format == "png" || format == "jpeg" {
-		// extract color features and store on db
-		histo := imgutil.New(8, 8, 8)
-		histo.Describe(img)
-		return histo.Feature
+// approximate input array by rounding each float value to 1 or 0
+// representing the entire array as a bit string, then encode as hex
+// assumes that this array has values between 1 and 0
+// otherwise we will most likely get arrays of F
+func bitApproximation(arr []float32) string {
+	n := len(arr)
+	outN := n/8 + n%8
+	b := make([]byte, outN)
+	var accum byte
+	for i, f := range arr {
+		bi := uint(i % 8)
+		if uint(f) > 0 {
+			accum |= 1 << bi
+		}
+		if bi == 7 {
+			b[i/8] = accum
+			accum = 0
+		}
 	}
-	return nil
-}
-
-func chiDist(feat1, feat2 []float32) float64 {
-	if len(feat1) != len(feat2) {
-		return math.Inf(1)
-	}
-	var accum float64 = 0
-	for i, f1 := range feat1 {
-		num := f1 - feat2[i]
-		den := f1 + feat2[i] + epsilon
-		accum += float64(num * num / den)
-	}
-	return accum / 2
+	return string(b)
 }
 
 //// Database Updates and Query
 
-func getDirectory(db *ImgDB, dir string) *Directory {
+// create cluster if not found
+func getCluster(db *ImgDB, features []float32) *Cluster {
+	cluster := bitApproximation(features)
 	if db == nil {
 		panic("input db is nil")
 	}
-	dirs := []Directory{}
-	db.Find(&dirs, "dirpath = ?", dir)
-	var result *Directory
+	dirs := []Cluster{}
+	db.Find(&dirs, "name = ?", cluster)
+	var result *Cluster
 	if len(dirs) > 0 {
 		result = &dirs[0]
+	} else {
+		// create
+		result = &Cluster{Name: cluster}
+		db.Create(result)
 	}
 	return result
 }
 
-func getAssocs(db *ImgDB, dir *Directory) []ImageFile {
+func fileExists(db *ImgDB, filename string) bool {
+	files := []ImageFile{}
+	db.Find(&files, "name = ?", filename)
+	return len(files) > 0
+}
+
+func getAssocs(db *ImgDB, cluster *Cluster) []ImageFile {
 	if db == nil {
 		panic("input db is nil")
 	}
-	if dir == nil {
-		panic("input dir is nil")
+	if cluster == nil {
+		panic("input cluster is nil")
 	}
 	imgs := []ImageFile{}
-	db.Model(dir).Association("ImageFiles").Find(&imgs)
+	db.Model(cluster).Association("ImageFiles").Find(&imgs)
 	return imgs
 }

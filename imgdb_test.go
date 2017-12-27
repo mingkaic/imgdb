@@ -2,6 +2,8 @@ package imgdb
 
 import (
 	"bytes"
+	"encoding/binary"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -14,97 +16,113 @@ import (
 
 var outDir = "testout"
 
-var db *ImgDB
+var dbFile = "test.db"
 
 // =============================================
 //                    Tests
 // =============================================
 
 func TestMain(m *testing.M) {
-	// clear test area
-	clearOutDir()
-	db = New("sqlite3", "test.db")
-	defer db.Close()
 	retCode := m.Run()
 	os.Exit(retCode)
 }
 
 //// Database Updates and Query Tests
 
-func TestPrivateQueries(t *testing.T) {
-	directory := getDirectory(db, outDir)
-	if directory != nil {
-		t.Errorf("failed to report missing directory %s", outDir)
-	}
+func TestPrivateGetCluster(t *testing.T) {
+	testWrap(func(db *ImgDB) {
+		mockFeats := make([]float32, 512)
+		// randomly generate cluster
+		genRandFeat(mockFeats)
+		cluster := getCluster(db, mockFeats[:])
+		if cluster == nil {
+			t.Errorf("failed to generate cluster for mock features %v", mockFeats)
+		}
+	})
+}
 
-	// add directory
-	mockDir := "mockDir"
-	mockImg := ImageFile{
-		Name:   "mockImg1",
-		Format: "mock",
-		Index:  "31",
-	}
-	db.Create(&Directory{Dirpath: mockDir, ImageFiles: []ImageFile{mockImg}})
-	directory = getDirectory(db, mockDir)
-	if directory == nil {
-		t.Errorf("failed to find directory %s", outDir)
-	} else {
-		// check path
-		if directory.Dirpath != mockDir {
-			t.Errorf("expecting dirpath %s, got %s", mockDir, directory.Dirpath)
+func TestPrivateGetAssoc(t *testing.T) {
+	testWrap(func(db *ImgDB) {
+		mockFeats := make([]float32, 512)
+		// randomly generate cluster
+		genRandFeat(mockFeats)
+		cluster := getCluster(db, mockFeats[:])
+		mockImg := ImageFile{
+			Name:   "mockImg1",
+			Format: "mock",
+			Index:  stringify(mockFeats[:]),
 		}
 
-		// check associations
-		imgs := getAssocs(db, directory)
-		db.Model(directory).Association("ImageFiles").Find(&imgs)
-		if imgs[0].Name != mockImg.Name {
-			t.Errorf("expected filename %s, got %s", imgs[0].Name, mockImg.Name)
-		} else if imgs[0].Index != mockImg.Index {
-			t.Errorf("expected index %s, got %s", imgs[0].Index, mockImg.Index)
+		if cluster != nil {
+			db.Model(cluster).
+				Association("ImageFiles").
+				Append(mockImg)
 		}
-	}
 
-	afterEach()
+		imgs := getAssocs(db, cluster)
+		if len(imgs) != 1 {
+			t.Errorf("expecting 1 image associated, got %d", len(imgs))
+		} else {
+			if imgs[0].Name != mockImg.Name {
+				t.Errorf("expected filename %s, got %s", imgs[0].Name, mockImg.Name)
+			} else if imgs[0].Index != mockImg.Index {
+				t.Errorf("expected index %s, got %s", imgs[0].Index, mockImg.Index)
+			}
+		}
+	})
 }
 
 //// Public API Tests
 
 func TestAddImg(t *testing.T) {
-	file, err := os.Open("testsamples/testimg.jpg")
-	if err != nil {
-		panic(err)
-	}
+	testWrap(func(db *ImgDB) {
+		file, err := os.Open(filepath.Join("testsamples", "testimg.jpg"))
+		if err != nil {
+			panic(err)
+		}
 
-	rawdata, err := ioutil.ReadAll(file)
-	if err != nil {
-		panic(err)
-	}
-	b := bytes.NewBuffer(rawdata)
+		rawdata, err := ioutil.ReadAll(file)
+		if err != nil {
+			panic(err)
+		}
+		b := bytes.NewBuffer(rawdata)
 
-	err = db.AddImg(outDir, "mockfile", *b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	imgs := []ImageFile{}
-	db.Find(&imgs, "name = ?", "mockfile")
+		fileLoc, err := db.AddImg("mockfile", *b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		imgs := []ImageFile{}
+		db.Find(&imgs, "name = ?", "mockfile")
 
-	if len(imgs) != 1 {
-		t.Errorf("expecting 1 inserted image, got %d", len(imgs))
-	}
-	_, err = os.Stat(filepath.Join(outDir, "mockfile.jpeg"))
-	if err != nil && os.IsNotExist(err) {
-		t.Errorf("image file (mockfile.jpeg) not found")
-	}
+		if len(imgs) != 1 {
+			t.Errorf("expecting 1 inserted image, got %d", len(imgs))
+		}
+		_, err = os.Stat(fileLoc)
+		if err != nil && os.IsNotExist(err) {
+			t.Errorf("image file at specified path (%s) not found", fileLoc)
+		}
 
-	afterEach()
+		// todo: check for value correctness
+	})
 }
 
 // =============================================
 //                    Private
 // =============================================
 
-func clearOutDir() {
-	dir, err := os.Open(outDir)
+func testWrap(test func(*ImgDB)) {
+	db := New("sqlite3", dbFile, outDir)
+	defer db.Close()
+
+	test(db)
+
+	// after each
+	os.Remove(dbFile)
+	cleanDir(outDir)
+}
+
+func cleanDir(dirpath string) {
+	dir, err := os.Open(dirpath)
 	if err != nil {
 		return
 	}
@@ -115,11 +133,18 @@ func clearOutDir() {
 		return
 	}
 	for _, name := range names {
-		os.RemoveAll(filepath.Join(outDir, name))
+		os.RemoveAll(filepath.Join(dirpath, name))
 	}
+	os.Remove(dirpath)
 }
 
-func afterEach() {
-	db.DropTableIfExists(&Directory{}, &ImageFile{})
-	db.AutoMigrate(&Directory{}, &ImageFile{})
+func genRandFeat(feats []float32) {
+	// randomly generate cluster
+	bits := make([]byte, len(feats)*4)
+	io.ReadFull(rando, bits[:])
+	buf := bytes.NewBuffer(bits[:])
+	err := binary.Read(buf, binary.LittleEndian, feats)
+	if err != nil {
+		panic(err)
+	}
 }
