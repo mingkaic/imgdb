@@ -138,7 +138,8 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err
 		// test similarity between new file and file
 		sim := imgutil.ChiDist(features, featureParse(file.Index))
 		if sim < chiThresh { // too similar beyond a threshold is marked as same
-			fmt.Println("found similar files %s %s", file.Name, name+"."+format)
+			fmt.Printf("found similar files %s %s", file.Name, filename)
+			// todo: return with this.mutex.Unlock()
 		}
 	}
 	// 2. check for same files and insert uuid to avoid dups
