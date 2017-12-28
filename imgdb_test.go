@@ -14,9 +14,10 @@ import (
 //                    Globals
 // =============================================
 
-var outDir = "testout"
-
-var dbFile = "test.db"
+const (
+	outDir = "testout"
+	dbFile = "test.db"
+)
 
 // =============================================
 //                    Tests
@@ -76,7 +77,7 @@ func TestPrivateGetAssoc(t *testing.T) {
 
 func TestAddImg(t *testing.T) {
 	testWrap(func(db *ImgDB) {
-		file, err := os.Open(filepath.Join("testsamples", "testimg.jpg"))
+		file, err := os.Open(filepath.Join("testimgs", "testimg.jpg"))
 		if err != nil {
 			panic(err)
 		}

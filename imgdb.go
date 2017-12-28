@@ -111,6 +111,8 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err
 			err = fmt.Errorf("image too small: got <%d, %d> size", width, height)
 			return
 		}
+	} else {
+		return
 	}
 
 	// feature extraction

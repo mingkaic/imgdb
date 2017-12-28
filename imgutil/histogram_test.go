@@ -46,7 +46,7 @@ func TestMain(m *testing.M) {
 func TestHistogram(t *testing.T) {
 	histo := New(2, 2, 2)
 	for color, exFeats := range colorMaps {
-		file, err := os.Open(filepath.Join("..", "testsamples", color+".jpg"))
+		file, err := os.Open(filepath.Join("..", "testimgs", color+".jpg"))
 		if err != nil {
 			panic(err)
 		}
@@ -68,7 +68,7 @@ func TestGenerateFeature(t *testing.T) {
 		t.Errorf("failed to notify bad format by returning nil features")
 	}
 	for color, exFeats := range colorMaps8 {
-		file, err := os.Open(filepath.Join("..", "testsamples", color+".jpg"))
+		file, err := os.Open(filepath.Join("..", "testimgs", color+".jpg"))
 		if err != nil {
 			panic(err)
 		}
