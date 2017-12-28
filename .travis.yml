@@ -1,0 +1,18 @@
+language: go
+
+go:
+  - 1.9.x
+  - master
+
+script: go test -v ./...
+
+# safelist
+branches:
+  only:
+  - master
+  - stable
+  - experimental
+
+# no need to pollute inboxes
+notifications:
+  email: false
