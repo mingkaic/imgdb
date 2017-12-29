@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -77,18 +78,17 @@ func TestPrivateGetAssoc(t *testing.T) {
 
 func TestAddImg(t *testing.T) {
 	testWrap(func(db *ImgDB) {
-		file, err := os.Open(filepath.Join("testimgs", "testimg.jpg"))
-		if err != nil {
-			panic(err)
-		}
+		inputFileLoc := filepath.Join("testimgs", "testimg.jpg")
+		file, err := os.Open(inputFileLoc)
+		checkErr(err)
 
 		rawdata, err := ioutil.ReadAll(file)
-		if err != nil {
-			panic(err)
-		}
+		checkErr(err)
 		b := bytes.NewBuffer(rawdata)
 
-		fileLoc, err := db.AddImg("mockfile", *b)
+		expectFileLoc := filepath.Join(outDir, "mockfile.jpeg")
+		expectName := "mockfile"
+		imgModel, err := db.AddImg(expectName, *b)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,12 +98,25 @@ func TestAddImg(t *testing.T) {
 		if len(imgs) != 1 {
 			t.Errorf("expecting 1 inserted image, got %d", len(imgs))
 		}
-		_, err = os.Stat(fileLoc)
-		if err != nil && os.IsNotExist(err) {
-			t.Errorf("image file at specified path (%s) not found", fileLoc)
+		if imgModel.Name != expectName {
+			t.Errorf("expected image name %s, got %s", expectName, imgModel.Name)
 		}
-
-		// todo: check for value correctness
+		if imgModel.Format != "jpeg" {
+			t.Errorf("expected image format jpeg, got %s", imgModel.Format)
+		}
+		_, err = os.Stat(expectFileLoc)
+		if err != nil && os.IsNotExist(err) {
+			t.Errorf("image file at specified path (%s) not found", expectFileLoc)
+		} else {
+			// check for value correctness
+			file, err := os.Open(expectFileLoc)
+			checkErr(err)
+			gotout, err := ioutil.ReadAll(file)
+			checkErr(err)
+			if !reflect.DeepEqual(rawdata, gotout) {
+				t.Errorf("file data different between %s, %s", inputFileLoc, expectFileLoc)
+			}
+		}
 	})
 }
 
@@ -144,8 +157,5 @@ func genRandFeat(feats []float32) {
 	bits := make([]byte, len(feats)*4)
 	io.ReadFull(rando, bits[:])
 	buf := bytes.NewBuffer(bits[:])
-	err := binary.Read(buf, binary.LittleEndian, feats)
-	if err != nil {
-		panic(err)
-	}
+	checkErr(binary.Read(buf, binary.LittleEndian, feats))
 }

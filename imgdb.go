@@ -37,7 +37,6 @@ type ImgDB struct {
 	MinW     uint
 	MinH     uint
 	basePath string
-	mutex    sync.Mutex
 }
 
 //// Models
@@ -79,9 +78,7 @@ var rando = rand.Reader
 // Initializes and migrates relevant schemas
 func New(dialect, source, filedir string) *ImgDB {
 	db, err := gorm.Open(dialect, source)
-	if err != nil {
-		panic(err)
-	}
+	checkErr(err)
 	db.AutoMigrate(&Cluster{}, &ImageFile{})
 	out := &ImgDB{
 		DB:       db,
@@ -98,7 +95,7 @@ func New(dialect, source, filedir string) *ImgDB {
 // Save to file system then add in database
 // Filters out images too small beyond a limit
 // Index and logic inspired from https://tinyurl.com/yaup47bg
-func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err error) {
+func (this *ImgDB) AddImg(name string, source bytes.Buffer) (imgModel *ImageFile, err error) {
 	data := source.Bytes()
 	img, format, err := image.Decode(&source)
 
@@ -123,10 +120,10 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err
 	}
 
 	filename := name + "." + format
-	imgModel := ImageFile{Name: name, Format: format, Index: stringify(features)}
+	imgModel = &ImageFile{Name: name, Format: format, Index: stringify(features)}
 
 	// ==== begin critical section ====
-	this.mutex.Lock()
+	// asserts that gorm api calls are thread-safe
 	cluster := getCluster(this, features)
 	if cluster == nil {
 		err = fmt.Errorf("get cluster failed for features %v", features)
@@ -138,8 +135,8 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err
 		// test similarity between new file and file
 		sim := imgutil.ChiDist(features, featureParse(file.Index))
 		if sim < chiThresh { // too similar beyond a threshold is marked as same
-			fmt.Printf("found similar files %s %s", file.Name, filename)
-			// todo: return with this.mutex.Unlock()
+			fmt.Printf("found similar file %s", file.Name)
+			return
 		}
 	}
 	// 2. check for same files and insert uuid to avoid dups
@@ -152,13 +149,11 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (fileLoc string, err
 		filename = imgModel.Name + "." + format
 	}
 	// associate image model
-	this.Model(cluster).Association("ImageFiles").Append(imgModel)
-	this.mutex.Unlock()
+	this.Model(cluster).Association("ImageFiles").Append(*imgModel)
 	// ==== end critical section ====
 
 	// write to file (invariant: filename is unique)
-	fileLoc = filepath.Join(this.basePath, filename)
-	file, err := os.Create(fileLoc)
+	file, err := os.Create(filepath.Join(this.basePath, filename))
 	if err != nil {
 		return
 	}
