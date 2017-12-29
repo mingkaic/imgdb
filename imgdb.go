@@ -37,6 +37,7 @@ type ImgDB struct {
 	MinW     uint
 	MinH     uint
 	basePath string
+	mutex    sync.Mutex
 }
 
 //// Models
@@ -123,33 +124,37 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (imgModel *ImageFile
 	imgModel = &ImageFile{Name: name, Format: format, Index: stringify(features)}
 
 	// ==== begin critical section ====
-	// asserts that gorm api calls are thread-safe
-	cluster := getCluster(this, features)
-	if cluster == nil {
-		err = fmt.Errorf("get cluster failed for features %v", features)
-	}
-	// similarity check
-	// 1. check for duplicate features to avoid pollution
-	imgFiles := getAssocs(this, cluster)
-	for _, file := range imgFiles {
-		// test similarity between new file and file
-		sim := imgutil.ChiDist(features, featureParse(file.Index))
-		if sim < chiThresh { // too similar beyond a threshold is marked as same
-			fmt.Printf("found similar file %s", file.Name)
-			return
+	func() {
+		this.mutex.Lock()
+		defer this.mutex.Unlock()
+		// asserts that gorm api calls are thread-safe
+		cluster := getCluster(this, features)
+		if cluster == nil {
+			err = fmt.Errorf("get cluster failed for features %v", features)
 		}
-	}
-	// 2. check for same files and insert uuid to avoid dups
-	if fileExists(this, filename) {
-		var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
-		io.ReadFull(rando, r[:])
-		var appendage [16]byte
-		hex.Encode(appendage[:], r[:])
-		imgModel.Name += string(appendage[:])
-		filename = imgModel.Name + "." + format
-	}
-	// associate image model
-	this.Model(cluster).Association("ImageFiles").Append(*imgModel)
+		// similarity check
+		// 1. check for duplicate features to avoid pollution
+		imgFiles := getAssocs(this, cluster)
+		for _, file := range imgFiles {
+			// test similarity between new file and file
+			sim := imgutil.ChiDist(features, featureParse(file.Index))
+			if sim < chiThresh { // too similar beyond a threshold is marked as same
+				fmt.Printf("found similar file %s", file.Name)
+				return
+			}
+		}
+		// 2. check for same files and insert uuid to avoid dups
+		if fileExists(this, filename) {
+			var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
+			io.ReadFull(rando, r[:])
+			var appendage [16]byte
+			hex.Encode(appendage[:], r[:])
+			imgModel.Name += string(appendage[:])
+			filename = imgModel.Name + "." + format
+		}
+		// associate image model
+		this.Model(cluster).Association("ImageFiles").Append(*imgModel)
+	}()
 	// ==== end critical section ====
 
 	// write to file (invariant: filename is unique)
