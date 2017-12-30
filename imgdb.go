@@ -79,7 +79,7 @@ var rando = rand.Reader
 // Initializes and migrates relevant schemas
 func New(dialect, source, filedir string) *ImgDB {
 	db, err := gorm.Open(dialect, source)
-	checkErr(err)
+	panicCheck(err)
 	db.AutoMigrate(&Cluster{}, &ImageFile{})
 	out := &ImgDB{
 		DB:       db,
@@ -87,7 +87,7 @@ func New(dialect, source, filedir string) *ImgDB {
 		MinH:     minLimit,
 		basePath: filedir,
 	}
-	checkErr(os.MkdirAll(filedir, 0755))
+	panicCheck(os.MkdirAll(filedir, 0755))
 	return out
 }
 
@@ -96,9 +96,8 @@ func New(dialect, source, filedir string) *ImgDB {
 // Save to file system then add in database
 // Filters out images too small beyond a limit
 // Index and logic inspired from https://tinyurl.com/yaup47bg
-func (this *ImgDB) AddImg(name string, source bytes.Buffer) (imgModel *ImageFile, err error) {
-	data := source.Bytes()
-	img, format, err := image.Decode(&source)
+func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err error) {
+	img, format, err := image.Decode(bytes.NewBuffer(data))
 
 	// size filter
 	if err == nil {
@@ -175,7 +174,7 @@ func (this *ImgDB) AddImg(name string, source bytes.Buffer) (imgModel *ImageFile
 //                    Private
 // =============================================
 
-func checkErr(err error) {
+func panicCheck(err error) {
 	if err != nil {
 		panic(err)
 	}
@@ -186,14 +185,14 @@ func checkErr(err error) {
 // exact record of input float array
 func stringify(arr []float32) string {
 	buf := new(bytes.Buffer)
-	checkErr(binary.Write(buf, binary.LittleEndian, arr))
+	panicCheck(binary.Write(buf, binary.LittleEndian, arr))
 	return string(buf.Bytes())
 }
 
 func featureParse(str string) []float32 {
 	out := make([]float32, len([]byte(str))/4)
 	buf := bytes.NewBuffer([]byte(str))
-	checkErr(binary.Read(buf, binary.LittleEndian, out))
+	panicCheck(binary.Read(buf, binary.LittleEndian, out))
 	return out
 }
 

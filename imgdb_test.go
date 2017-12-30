@@ -80,15 +80,14 @@ func TestAddImg(t *testing.T) {
 	testWrap(func(db *ImgDB) {
 		inputFileLoc := filepath.Join("testimgs", "testimg.jpg")
 		file, err := os.Open(inputFileLoc)
-		checkErr(err)
+		panicCheck(err)
 
 		rawdata, err := ioutil.ReadAll(file)
-		checkErr(err)
-		b := bytes.NewBuffer(rawdata)
+		panicCheck(err)
 
 		expectFileLoc := filepath.Join(outDir, "mockfile.jpeg")
 		expectName := "mockfile"
-		imgModel, err := db.AddImg(expectName, *b)
+		imgModel, err := db.AddImg(expectName, rawdata)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,9 +109,9 @@ func TestAddImg(t *testing.T) {
 		} else {
 			// check for value correctness
 			file, err := os.Open(expectFileLoc)
-			checkErr(err)
+			panicCheck(err)
 			gotout, err := ioutil.ReadAll(file)
-			checkErr(err)
+			panicCheck(err)
 			if !reflect.DeepEqual(rawdata, gotout) {
 				t.Errorf("file data different between %s, %s", inputFileLoc, expectFileLoc)
 			}
@@ -157,5 +156,5 @@ func genRandFeat(feats []float32) {
 	bits := make([]byte, len(feats)*4)
 	io.ReadFull(rando, bits[:])
 	buf := bytes.NewBuffer(bits[:])
-	checkErr(binary.Read(buf, binary.LittleEndian, feats))
+	panicCheck(binary.Read(buf, binary.LittleEndian, feats))
 }
