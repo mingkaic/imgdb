@@ -1,3 +1,8 @@
+//// file: histogram.go
+
+// Package imgutil ...
+// Supplies machine vision utilities for
+// extracting and processing image features in imgdb
 package imgutil
 
 import (

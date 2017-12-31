@@ -54,7 +54,7 @@ type Cluster struct {
 // Specifies name information and image features
 type ImageFile struct {
 	gorm.Model
-	Name      string `gorm:"not null"`
+	Name      string `gorm:"not null;unique"`
 	Format    string `gorm:"not null"`
 	Index     string `gorm:"not null"`
 	ClusterID int
@@ -138,12 +138,12 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 			// test similarity between new file and file
 			sim := imgutil.ChiDist(features, featureParse(file.Index))
 			if sim < chiThresh { // too similar beyond a threshold is marked as same
-				fmt.Printf("found similar file %s", file.Name)
+				err = fmt.Errorf("%s similar to existing file %s", name, file.Name)
 				return
 			}
 		}
 		// 2. check for same files and insert uuid to avoid dups
-		if fileExists(this, filename) {
+		if fileExists(this, imgModel.Name) {
 			var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
 			io.ReadFull(rando, r[:])
 			var appendage [16]byte
@@ -239,9 +239,9 @@ func getCluster(db *ImgDB, features []float32) *Cluster {
 	return result
 }
 
-func fileExists(db *ImgDB, filename string) bool {
+func fileExists(db *ImgDB, name string) bool {
 	files := []ImageFile{}
-	db.Find(&files, "name = ?", filename)
+	db.Find(&files, "name = ?", name)
 	return len(files) > 0
 }
 
