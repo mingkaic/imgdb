@@ -123,13 +123,13 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 	imgModel = &ImageFile{Name: name, Format: format, Index: stringify(features)}
 
 	// ==== begin critical section ====
-	func() {
+	err = func() error {
 		this.mutex.Lock()
 		defer this.mutex.Unlock()
 		// asserts that gorm api calls are thread-safe
 		cluster := getCluster(this, features)
 		if cluster == nil {
-			err = fmt.Errorf("get cluster failed for features %v", features)
+			return fmt.Errorf("get cluster failed for features %v", features)
 		}
 		// similarity check
 		// 1. check for duplicate features to avoid pollution
@@ -138,8 +138,7 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 			// test similarity between new file and file
 			sim := imgutil.ChiDist(features, featureParse(file.Index))
 			if sim < chiThresh { // too similar beyond a threshold is marked as same
-				err = fmt.Errorf("%s similar to existing file %s", name, file.Name)
-				return
+				return fmt.Errorf("%s similar to existing file %s", name, file.Name)
 			}
 		}
 		// 2. check for same files and insert uuid to avoid dups
@@ -153,7 +152,11 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 		}
 		// associate image model
 		this.Model(cluster).Association("ImageFiles").Append(*imgModel)
+		return nil
 	}()
+	if err != nil {
+		return
+	}
 	// ==== end critical section ====
 
 	// write to file (invariant: filename is unique)
