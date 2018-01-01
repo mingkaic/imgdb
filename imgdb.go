@@ -57,7 +57,21 @@ type ImageFile struct {
 	Name      string `gorm:"not null;unique"`
 	Format    string `gorm:"not null"`
 	Index     string `gorm:"not null"`
+	Sources []Source
 	ClusterID int
+}
+
+// Source ...
+// Specifies image link
+type Source struct {
+	gorm.Model
+	Link	string `gorm:"not null;unique"`
+	ImageFileID int
+}
+
+type DupFileError struct {
+	existing string
+	dupfile string
 }
 
 // =============================================
@@ -65,7 +79,7 @@ type ImageFile struct {
 // =============================================
 
 const (
-	chiThresh = 1e-5
+	chiThresh = 5e-3
 	minLimit  = 500
 )
 
@@ -80,7 +94,7 @@ var rando = rand.Reader
 func New(dialect, source, filedir string) *ImgDB {
 	db, err := gorm.Open(dialect, source)
 	panicCheck(err)
-	db.AutoMigrate(&Cluster{}, &ImageFile{})
+	db.AutoMigrate(&Cluster{}, &ImageFile{}, &Source{})
 	out := &ImgDB{
 		DB:       db,
 		MinW:     minLimit,
@@ -138,7 +152,7 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 			// test similarity between new file and file
 			sim := imgutil.ChiDist(features, featureParse(file.Index))
 			if sim < chiThresh { // too similar beyond a threshold is marked as same
-				return fmt.Errorf("%s similar to existing file %s", name, file.Name)
+				return &DupFileError{file.Name + "." + file.Format, filename}
 			}
 		}
 		// 2. check for same files and insert uuid to avoid dups
@@ -171,6 +185,28 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 	}
 
 	return
+}
+
+// AddSource ...
+// Associate a link to a imagefile
+func (this *ImgDB) AddSource(imgModel *ImageFile, link string) {
+	this.Model(imgModel).Association("Sources").Append(Source{Link: link})
+}
+
+// SourceExists ...
+// Check if there is already an associated link in the database
+func (this *ImgDB) SourceExists(link string) bool {
+	sources := []Source{}
+	this.Find(&sources, "link = ?", link)
+	return len(sources) > 0
+}
+
+//// Error Member
+
+// Error ...
+// Implements error method for duplicate files
+func (this DupFileError) Error() string {
+	return fmt.Sprintf("existing %s, duplicate %s", this.existing, this.dupfile)
 }
 
 // =============================================
