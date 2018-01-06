@@ -22,8 +22,8 @@ import (
 
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
-	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	_ "github.com/jinzhu/gorm/dialects/postgres"
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"github.com/mingkaic/imgdb/imgutil"
 )
 
@@ -58,7 +58,7 @@ type ImageFile struct {
 	Name      string `gorm:"not null;unique"`
 	Format    string `gorm:"not null"`
 	Index     string `gorm:"not null"`
-	Sources []Source
+	Sources   []Source
 	ClusterID int
 }
 
@@ -66,13 +66,13 @@ type ImageFile struct {
 // Specifies image link
 type Source struct {
 	gorm.Model
-	Link	string `gorm:"not null;unique"`
+	Link        string `gorm:"not null;unique"`
 	ImageFileID int
 }
 
 type DupFileError struct {
 	existing string
-	dupfile string
+	dupfile  string
 }
 
 // =============================================
