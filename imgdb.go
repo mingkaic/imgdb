@@ -92,18 +92,20 @@ var rando = rand.Reader
 
 // New ...
 // Initializes and migrates relevant schemas
-func New(dialect, source, filedir string) *ImgDB {
+func New(dialect, source, filedir string) (out *ImgDB, err error) {
 	db, err := gorm.Open(dialect, source)
-	panicCheck(err)
+	if err != nil {
+		return
+	}
 	db.AutoMigrate(&Cluster{}, &ImageFile{}, &Source{})
-	out := &ImgDB{
+	out = &ImgDB{
 		DB:       db,
 		MinW:     minLimit,
 		MinH:     minLimit,
 		basePath: filedir,
 	}
-	panicCheck(os.MkdirAll(filedir, 0755))
-	return out
+	err = os.MkdirAll(filedir, 0755)
+	return
 }
 
 // AddImg ...
