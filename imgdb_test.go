@@ -40,6 +40,11 @@ func TestPrivateGetCluster(t *testing.T) {
 		if cluster == nil {
 			t.Errorf("failed to generate cluster for mock features %v", mockFeats)
 		}
+
+		imgs := getAssocs(db, cluster)
+		if len(imgs) > 0 {
+			t.Errorf("expecting no images associated, got %d images", len(imgs))
+		}
 	})
 }
 

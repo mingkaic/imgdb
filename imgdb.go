@@ -270,7 +270,7 @@ func getCluster(db *ImgDB, features []float32) *Cluster {
 		panic("input db is nil")
 	}
 	model := &Cluster{}
-	db.FirstOrCreate(model, "name = ?", cluster)
+	db.FirstOrCreate(model, Cluster{Name: cluster})
 	return model
 }
 
