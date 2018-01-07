@@ -124,7 +124,10 @@ func TestAddImg(t *testing.T) {
 // =============================================
 
 func testWrap(test func(*ImgDB)) {
-	db := New("sqlite3", dbFile, outDir)
+	db, err := New("sqlite3", dbFile, outDir)
+	if err != nil {
+		panic(err)
+	}
 	defer db.Close()
 
 	test(db)

@@ -38,7 +38,7 @@ type ImgDB struct {
 	MinW     uint
 	MinH     uint
 	basePath string
-	mutex    sync.Mutex
+	mutex    sync.RWMutex
 }
 
 //// Models
@@ -139,42 +139,43 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 	filename := name + "." + format
 	imgModel = &ImageFile{Name: name, Format: format, Index: stringify(features)}
 
-	// ==== begin critical section ====
-	err = func() error {
-		this.mutex.Lock()
-		defer this.mutex.Unlock()
-		// asserts that gorm api calls are thread-safe
-		cluster := getCluster(this, features)
-		if cluster == nil {
-			return fmt.Errorf("get cluster failed for features %v", features)
-		}
-		// similarity check
-		// 1. check for duplicate features to avoid pollution
-		imgFiles := getAssocs(this, cluster)
-		for _, file := range imgFiles {
-			// test similarity between new file and file
-			sim := imgutil.ChiDist(features, featureParse(file.Index))
-			if sim < chiThresh { // too similar beyond a threshold is marked as same
-				return &DupFileError{file.Name + "." + file.Format, filename}
-			}
-		}
-		// 2. check for same files and insert uuid to avoid dups
-		if fileExists(this, imgModel.Name) {
-			var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
-			io.ReadFull(rando, r[:])
-			var appendage [16]byte
-			hex.Encode(appendage[:], r[:])
-			imgModel.Name += string(appendage[:])
-			filename = imgModel.Name + "." + format
-		}
-		// associate image model
-		this.Model(cluster).Association("ImageFiles").Append(*imgModel)
-		return nil
-	}()
-	if err != nil {
+	// ==== begin reading from db ====
+	// asserts that gorm api calls are thread-safe
+	this.mutex.RLock()
+	cluster := getCluster(this, features)
+	if cluster == nil {
+		err = fmt.Errorf("get cluster failed for features %v", features)
 		return
 	}
-	// ==== end critical section ====
+	// similarity check
+	// 1. check for duplicate features to avoid pollution
+	imgFiles := getAssocs(this, cluster)
+	for _, file := range imgFiles {
+		// test similarity between new file and file
+		sim := imgutil.ChiDist(features, featureParse(file.Index))
+		if sim < chiThresh { // too similar beyond a threshold is marked as same
+			err = &DupFileError{file.Name + "." + file.Format, filename}
+			return
+		}
+	}
+	// 2. check for same files and insert uuid to avoid dups
+	if fileExists(this, imgModel.Name) {
+		var r [8]byte // ~ 10 ^ -19 prob of dup assuming perfect randomness
+		io.ReadFull(rando, r[:])
+		var appendage [16]byte
+		hex.Encode(appendage[:], r[:])
+		imgModel.Name += string(appendage[:])
+		filename = imgModel.Name + "." + format
+	}
+	this.mutex.RUnlock()
+	// ==== end reading from db ====
+
+	// ==== begin writing to db ====
+	// associate image model
+	this.mutex.Lock()
+	this.Model(cluster).Association("ImageFiles").Append(*imgModel)
+	this.mutex.Unlock()
+	// ==== end writing to db ====
 
 	// write to file (invariant: filename is unique)
 	file, err := os.Create(filepath.Join(this.basePath, filename))
@@ -268,17 +269,9 @@ func getCluster(db *ImgDB, features []float32) *Cluster {
 	if db == nil {
 		panic("input db is nil")
 	}
-	dirs := []Cluster{}
-	db.Find(&dirs, "name = ?", cluster)
-	var result *Cluster
-	if len(dirs) > 0 {
-		result = &dirs[0]
-	} else {
-		// create
-		result = &Cluster{Name: cluster}
-		db.Create(result)
-	}
-	return result
+	model := &Cluster{}
+	db.FirstOrCreate(model, "name = ?", cluster)
+	return model
 }
 
 func fileExists(db *ImgDB, name string) bool {
