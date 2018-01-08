@@ -16,6 +16,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -57,7 +58,7 @@ type ImageFile struct {
 	gorm.Model
 	Name      string `gorm:"not null;unique"`
 	Format    string `gorm:"not null"`
-	Index     string `gorm:"not null"`
+	Index     []byte `gorm:"not null"`
 	Sources   []Source
 	ClusterID int
 }
@@ -137,25 +138,24 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 	}
 
 	filename := name + "." + format
+	clusterName := bitApproximation(features)
 	imgModel = &ImageFile{Name: name, Format: format, Index: stringify(features)}
 
 	// ==== begin reading from db ====
 	// asserts that gorm api calls are thread-safe
 	this.mutex.RLock()
-	cluster := getCluster(this, features)
-	if cluster == nil {
-		err = fmt.Errorf("get cluster failed for features %v", features)
-		return
-	}
-	// similarity check
-	// 1. check for duplicate features to avoid pollution
-	imgFiles := getAssocs(this, cluster)
-	for _, file := range imgFiles {
-		// test similarity between new file and file
-		sim := imgutil.ChiDist(features, featureParse(file.Index))
-		if sim < chiThresh { // too similar beyond a threshold is marked as same
-			err = &DupFileError{file.Name + "." + file.Format, filename}
-			return
+	cluster := getCluster(this, clusterName)
+	if cluster != nil {
+		// similarity check
+		// 1. check for duplicate features to avoid pollution
+		imgFiles := getAssocs(this, cluster)
+		for _, file := range imgFiles {
+			// test similarity between new file and file
+			sim := imgutil.ChiDist(features, featureParse(file.Index))
+			if sim < chiThresh { // too similar beyond a threshold is marked as same
+				err = &DupFileError{file.Name + "." + file.Format, filename}
+				return
+			}
 		}
 	}
 	// 2. check for same files and insert uuid to avoid dups
@@ -173,6 +173,9 @@ func (this *ImgDB) AddImg(name string, data []byte) (imgModel *ImageFile, err er
 	// ==== begin writing to db ====
 	// associate image model
 	this.mutex.Lock()
+	if cluster == nil {
+		cluster = createCluster(this, clusterName)
+	}
 	this.Model(cluster).Association("ImageFiles").Append(*imgModel)
 	this.mutex.Unlock()
 	// ==== end writing to db ====
@@ -226,15 +229,15 @@ func panicCheck(err error) {
 //// Data Serialization Utility
 
 // exact record of input float array
-func stringify(arr []float32) string {
+func stringify(arr []float32) []byte {
 	buf := new(bytes.Buffer)
 	panicCheck(binary.Write(buf, binary.LittleEndian, arr))
-	return string(buf.Bytes())
+	return buf.Bytes()
 }
 
-func featureParse(str string) []float32 {
-	out := make([]float32, len([]byte(str))/4)
-	buf := bytes.NewBuffer([]byte(str))
+func featureParse(feat []byte) []float32 {
+	out := make([]float32, len(feat)/4)
+	buf := bytes.NewBuffer(feat)
 	panicCheck(binary.Read(buf, binary.LittleEndian, out))
 	return out
 }
@@ -244,34 +247,67 @@ func featureParse(str string) []float32 {
 // assumes that this array has values between 1 and 0
 // otherwise we will most likely get arrays of F
 func bitApproximation(arr []float32) string {
+	const nBitEncode = 6
 	n := len(arr)
-	outN := n/8 + n%8
-	b := make([]byte, outN)
-	var accum byte
+	outN := int(math.Ceil(float64(n) / nBitEncode))
+	out := make([]byte, outN)
+	thresh := float32(1) / float32(len(arr))
+	accum := 0
 	for i, f := range arr {
-		bi := uint(i % 8)
-		if uint(f) > 0 {
+		bi := uint(i % nBitEncode)
+		if f >= thresh {
 			accum |= 1 << bi
 		}
-		if bi == 7 {
-			b[i/8] = accum
+		if bi == nBitEncode-1 {
+			out[i/nBitEncode] = b64Encode(accum)
 			accum = 0
 		}
 	}
-	return string(b)
+	if n%nBitEncode > 0 {
+		out[outN-1] = b64Encode(accum)
+		accum = 0
+	}
+	return string(out)
+}
+
+func b64Encode(i int) byte {
+	if i == 62 {
+		i = '-'
+	} else if i == 63 {
+		i = '_'
+	} else if i < 10 {
+		i = '0' + i
+	} else if i < 36 {
+		i = 'A' + (i - 10)
+	} else {
+		i = 'a' + (i - 36)
+	}
+	return byte(i)
 }
 
 //// Database Updates and Query
 
 // create cluster if not found
-func getCluster(db *ImgDB, features []float32) *Cluster {
-	cluster := bitApproximation(features)
+func getCluster(db *ImgDB, clusterName string) *Cluster {
 	if db == nil {
 		panic("input db is nil")
 	}
-	model := &Cluster{}
-	db.FirstOrCreate(model, Cluster{Name: cluster})
-	return model
+	clusters := []Cluster{}
+	db.Find(&clusters, "name = ?", clusterName)
+	var out *Cluster
+	if len(clusters) > 0 {
+		out = &clusters[0]
+	}
+	return out
+}
+
+func createCluster(db *ImgDB, clusterName string) *Cluster {
+	if db == nil {
+		panic("input db is nil")
+	}
+	out := &Cluster{Name: clusterName}
+	db.Create(out)
+	return out
 }
 
 func fileExists(db *ImgDB, name string) bool {
@@ -288,6 +324,7 @@ func getAssocs(db *ImgDB, cluster *Cluster) []ImageFile {
 		panic("input cluster is nil")
 	}
 	imgs := []ImageFile{}
-	db.Model(cluster).Association("ImageFiles").Find(&imgs)
+	assoc := db.Model(cluster).Association("ImageFiles")
+	assoc.Find(&imgs)
 	return imgs
 }

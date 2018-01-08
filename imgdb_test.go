@@ -1,10 +1,8 @@
 package imgdb
 
 import (
-	"bytes"
-	"encoding/binary"
-	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,14 +34,28 @@ func TestPrivateGetCluster(t *testing.T) {
 		mockFeats := make([]float32, 512)
 		// randomly generate cluster
 		genRandFeat(mockFeats)
-		cluster := getCluster(db, mockFeats[:])
+		clusterName := bitApproximation(mockFeats[:])
+		cluster := getCluster(db, clusterName)
+		if cluster != nil {
+			t.Errorf("got unexpected cluster %s with features %v", clusterName, mockFeats)
+		}
+	})
+}
+
+func TestPrivateCreateCluster(t *testing.T) {
+	testWrap(func(db *ImgDB) {
+		mockFeats := make([]float32, 512)
+		// randomly generate cluster
+		genRandFeat(mockFeats)
+		clusterName := bitApproximation(mockFeats[:])
+		cluster := createCluster(db, clusterName)
 		if cluster == nil {
-			t.Errorf("failed to generate cluster for mock features %v", mockFeats)
+			t.Errorf("failed to create cluster %s", clusterName)
 		}
 
-		imgs := getAssocs(db, cluster)
-		if len(imgs) > 0 {
-			t.Errorf("expecting no images associated, got %d images", len(imgs))
+		foundClust := getCluster(db, clusterName)
+		if cluster.ID != foundClust.ID {
+			t.Errorf("created cluster ID=%d does not match found cluster ID=%d", cluster.ID, foundClust.ID)
 		}
 	})
 }
@@ -53,26 +65,28 @@ func TestPrivateGetAssoc(t *testing.T) {
 		mockFeats := make([]float32, 512)
 		// randomly generate cluster
 		genRandFeat(mockFeats)
-		cluster := getCluster(db, mockFeats[:])
+		clusterName := bitApproximation(mockFeats[:])
+		cluster := createCluster(db, clusterName)
 		mockImg := ImageFile{
 			Name:   "mockImg1",
 			Format: "mock",
 			Index:  stringify(mockFeats[:]),
 		}
 
-		if cluster != nil {
-			db.Model(cluster).
-				Association("ImageFiles").
-				Append(mockImg)
+		if cluster == nil {
+			t.Fatalf("failed to createCluster")
 		}
 
+		db.Model(cluster).
+			Association("ImageFiles").
+			Append(mockImg)
 		imgs := getAssocs(db, cluster)
 		if len(imgs) != 1 {
 			t.Errorf("expecting 1 image associated, got %d", len(imgs))
 		} else {
 			if imgs[0].Name != mockImg.Name {
 				t.Errorf("expected filename %s, got %s", imgs[0].Name, mockImg.Name)
-			} else if imgs[0].Index != mockImg.Index {
+			} else if !reflect.DeepEqual(imgs[0].Index, mockImg.Index) {
 				t.Errorf("expected index %s, got %s", imgs[0].Index, mockImg.Index)
 			}
 		}
@@ -160,9 +174,14 @@ func cleanDir(dirpath string) {
 }
 
 func genRandFeat(feats []float32) {
+	sum := 0
 	// randomly generate cluster
-	bits := make([]byte, len(feats)*4)
-	io.ReadFull(rando, bits[:])
-	buf := bytes.NewBuffer(bits[:])
-	panicCheck(binary.Read(buf, binary.LittleEndian, feats))
+	for i := range feats {
+		feat := rand.Intn(1000)
+		sum += feat
+		feats[i] = float32(feat)
+	}
+	for i, feat := range feats {
+		feats[i] = feat / float32(sum)
+	}
 }
